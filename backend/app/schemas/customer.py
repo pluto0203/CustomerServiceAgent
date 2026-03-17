@@ -29,8 +29,7 @@ class DataSource(str, Enum):
     AGENT_A2A = "agent_a2a"       # JSON từ agent upstream (ưu tiên)
     WEBHOOK = "webhook"           # Tracking event realtime
     CSV_UPLOAD = "csv_upload"     # Upload thủ công / test
-    CRM_HUBSPOT = "crm_hubspot"
-    CRM_ZOHO = "crm_zoho"
+    CRM_SYS = "CRM_system"
 
 
 # ---------------------------------------------------------------------------
@@ -98,6 +97,8 @@ class CustomerRecord(BaseModel):
     email: EmailStr | None = None
     phone: str | None = None
     full_name: str | None = None
+    gender: str | None = None
+    customer_created_at: datetime | None = None
     created_at: datetime | None = None
 
     # --- Hành vi tổng hợp ---
@@ -130,6 +131,7 @@ class CustomerRecord(BaseModel):
         "external_ids": {"hubspot": "contact_789"},
         "email": "nguyen.van.a@example.com",
         "full_name": "Nguyen Van A",
+        "gender": "male",
         "source": "agent_a2a",
         "behavioral": {
             "total_orders": 5,
