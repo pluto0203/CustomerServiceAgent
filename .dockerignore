@@ -1,0 +1,30 @@
+# VCS
+.git
+.github
+
+# Python
+**/__pycache__
+**/*.py[cod]
+**/*.pyo
+**/*.pyd
+**/.pytest_cache
+**/.mypy_cache
+**/.ruff_cache
+
+# Virtual environments
+.venv
+venv
+
+# Local data / artifacts
+*.db
+*.sqlite
+*.parquet
+*.log
+
+# Editors
+.vscode
+.idea
+
+# OS
+.DS_Store
+Thumbs.db
