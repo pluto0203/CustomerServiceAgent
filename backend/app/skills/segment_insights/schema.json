@@ -1,0 +1,54 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "SegmentInsightResult",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "segment_code",
+    "segment_name",
+    "score",
+    "confidence",
+    "summary",
+    "recommended_actions",
+    "top_signals",
+    "metrics"
+  ],
+  "properties": {
+    "segment_code": {
+      "type": "string"
+    },
+    "segment_name": {
+      "type": "string"
+    },
+    "score": {
+      "type": "number",
+      "minimum": 0,
+      "maximum": 1
+    },
+    "confidence": {
+      "type": "number",
+      "minimum": 0,
+      "maximum": 1
+    },
+    "summary": {
+      "type": "string",
+      "minLength": 1
+    },
+    "recommended_actions": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "top_signals": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "metrics": {
+      "type": "object",
+      "additionalProperties": true
+    }
+  }
+}

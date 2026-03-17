@@ -15,10 +15,10 @@ Business logic nằm trong app/skills/ và app/services/agent/orchestrator.py.
 
 from __future__ import annotations
 
-import time
-from uuid import uuid4
+from uuid import UUID
 
-from fastapi import BackgroundTasks
+from app.db.session import async_session
+from app.repositories import MessageLogRepository
 
 from app.schemas.a2a_envelope import (
     A2AMessage,
@@ -26,7 +26,8 @@ from app.schemas.a2a_envelope import (
     A2AResponse,
     A2AStatus,
 )
-from app.schemas.customer import CustomerBatch, CustomerRecord, DataSource
+from app.services.agent.processing_service import AgentProcessingService, process_message_timed
+from app.tasks.celery_app import celery_app
 
 
 class AgentMessageHandler:
@@ -42,22 +43,38 @@ class AgentMessageHandler:
     # Public interface
     # ---------------------------------------------------------------------------
 
-    async def accept_async(
-        self,
-        message: A2AMessage,
-        background_tasks: BackgroundTasks,
-    ) -> A2AResponse:
+    def __init__(self) -> None:
+        self.processing_service = AgentProcessingService()
+
+    async def accept_async(self, message: A2AMessage) -> A2AResponse:
         """
         Nhận message, validate, enqueue background job, trả 202 ngay.
         Đây là happy path chính cho production.
         """
         self._validate_payload_type(message)
 
-        # Idempotency: TODO Sprint 2 — check DB xem message_id đã xử lý chưa
+        async with async_session() as db:
+            logs = MessageLogRepository(db)
+            existing = await logs.get_by_message_id(message.message_id)
+            if existing is not None:
+                return A2AResponse(
+                    correlation_id=message.correlation_id or message.message_id,
+                    in_response_to=message.message_id,
+                    status=A2AStatus.ACCEPTED,
+                    payload_type=A2APayloadType.ANALYSIS_REQUEST,
+                    payload={
+                        "job_id": existing.celery_task_id,
+                        "message": "Message đã tồn tại, trả về trạng thái enqueue hiện có.",
+                    },
+                )
 
-        # Enqueue — TODO Sprint 2: thay bằng Celery task thật
-        job_id = str(uuid4())
-        background_tasks.add_task(self._process_in_background, message, job_id)
+            await logs.create_received(message)
+            async_result = celery_app.send_task(
+                "app.tasks.process_a2a_message.process_a2a_message",
+                kwargs={"message_payload": message.model_dump(mode="json")},
+            )
+            await logs.mark_accepted(message.message_id, async_result.id)
+            await db.commit()
 
         return A2AResponse(
             correlation_id=message.correlation_id or message.message_id,
@@ -65,7 +82,7 @@ class AgentMessageHandler:
             status=A2AStatus.ACCEPTED,
             payload_type=A2APayloadType.ANALYSIS_REQUEST,
             payload={
-                "job_id": job_id,
+                "job_id": async_result.id,
                 "message": (
                     f"Đã nhận {message.payload_type.value}, "
                     f"đang xử lý. Poll /agent/input/status/{message.message_id} "
@@ -81,10 +98,7 @@ class AgentMessageHandler:
         """
         self._validate_payload_type(message)
 
-        start = time.perf_counter()
-        batch = self._unpack_to_batch(message)
-        result = await self._run_analysis_pipeline(batch)
-        elapsed_ms = (time.perf_counter() - start) * 1000
+        result, elapsed_ms = await process_message_timed(message)
 
         return A2AResponse(
             correlation_id=message.correlation_id or message.message_id,
@@ -94,6 +108,9 @@ class AgentMessageHandler:
             payload=result,
             processing_time_ms=elapsed_ms,
         )
+
+    async def get_status(self, message_id: UUID) -> dict:
+        return await self.processing_service.get_message_status(message_id)
 
     # ---------------------------------------------------------------------------
     # Internal helpers
@@ -105,94 +122,9 @@ class AgentMessageHandler:
             A2APayloadType.CUSTOMER_RECORD,
             A2APayloadType.CUSTOMER_BATCH,
             A2APayloadType.TRACKING_EVENT,
-            A2APayloadType.ANALYSIS_REQUEST,
         }
         if message.payload_type not in accepted:
             raise ValueError(
                 f"payload_type '{message.payload_type}' không được hỗ trợ. "
                 f"Chấp nhận: {[t.value for t in accepted]}"
             )
-
-    def _unpack_to_batch(self, message: A2AMessage) -> CustomerBatch:
-        """
-        Unpack payload từ A2AMessage về CustomerBatch chuẩn.
-
-        Dù agent gửi 1 record hay nhiều records, đầu ra luôn là CustomerBatch
-        để pipeline phân tích chỉ cần xử lý một kiểu input duy nhất.
-        """
-        payload = message.payload
-
-        if message.payload_type == A2APayloadType.CUSTOMER_BATCH:
-            if isinstance(payload, CustomerBatch):
-                return payload
-            # Nếu payload là raw dict (JSON vừa deserialize)
-            return CustomerBatch.model_validate(payload)
-
-        if message.payload_type == A2APayloadType.CUSTOMER_RECORD:
-            if isinstance(payload, CustomerRecord):
-                record = payload
-            else:
-                record = CustomerRecord.model_validate(payload)
-            return CustomerBatch(
-                records=[record],
-                source_agent_id=message.routing.source_agent_id,
-            )
-
-        if message.payload_type == A2APayloadType.TRACKING_EVENT:
-            # TODO Sprint 3: convert tracking event → CustomerRecord
-            # Hiện tại tạo placeholder record từ event data
-            record = CustomerRecord(
-                source=DataSource.WEBHOOK,
-                extra_attributes=payload if isinstance(payload, dict) else {},
-            )
-            return CustomerBatch(
-                records=[record],
-                source_agent_id=message.routing.source_agent_id,
-            )
-
-        # ANALYSIS_REQUEST: payload chứa customer_ids + skill config
-        # TODO Sprint 2: load records từ DB theo customer_ids trong payload
-        raise NotImplementedError(
-            "ANALYSIS_REQUEST payload type sẽ implement ở Sprint 2 "
-            "khi có CustomerRepository."
-        )
-
-    async def _run_analysis_pipeline(self, batch: CustomerBatch) -> dict:
-        """
-        Chạy toàn bộ pipeline phân tích cho một CustomerBatch.
-
-        TODO Sprint 3-5: thay stub này bằng LangGraph orchestrator thật:
-            orchestrator = AgentOrchestrator()
-            return await orchestrator.run(batch, skills=["churn", "sentiment", "segment"])
-        """
-        # Stub trả về mock result để endpoint có thể test end-to-end ngay
-        return {
-            "batch_id": str(batch.batch_id),
-            "record_count": batch.count,
-            "results": [
-                {
-                    "customer_id": str(r.customer_id),
-                    "churn_risk": None,         # TODO: ChurnSkill
-                    "sentiment": None,          # TODO: SentimentSkill
-                    "segment": None,            # TODO: SegmentSkill
-                    "status": "pending_implementation",
-                }
-                for r in batch.records
-            ],
-            "note": "Stub result — skills sẽ implement từ Sprint 3.",
-        }
-
-    async def _process_in_background(self, message: A2AMessage, job_id: str) -> None:
-        """
-        Background task placeholder. Sprint 2 sẽ thay bằng Celery task.
-
-        Celery task sẽ:
-        1. Persist batch vào Postgres.
-        2. Index text feedback vào Qdrant.
-        3. Chạy skills pipeline.
-        4. Persist kết quả.
-        5. Callback reply_to nếu có.
-        """
-        # TODO Sprint 2: celery_app.send_task("tasks.process_a2a_message", ...)
-        batch = self._unpack_to_batch(message)
-        await self._run_analysis_pipeline(batch)

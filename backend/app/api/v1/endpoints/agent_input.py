@@ -50,7 +50,6 @@ def get_message_handler() -> AgentMessageHandler:
 )
 async def receive_agent_message(
     message: A2AMessage,
-    background_tasks: BackgroundTasks,
     handler: AgentMessageHandler = Depends(get_message_handler),
 ) -> A2AResponse:
     """
@@ -63,7 +62,7 @@ async def receive_agent_message(
     4. Trả A2AResponse(status=accepted) với job_id trong payload.
     """
     try:
-        response = await handler.accept_async(message, background_tasks)
+        response = await handler.accept_async(message)
         return response
     except ValueError as exc:
         raise HTTPException(
@@ -125,12 +124,7 @@ async def get_message_status(
     Trả trạng thái và kết quả (nếu có) của message đã gửi vào /agent/input.
     Dùng cho agent upstream poll kết quả khi không có reply_to callback.
     """
-    # TODO Sprint 2: truy vấn run_results từ DB theo message_id
-    return {
-        "message_id": str(message_id),
-        "status": "not_implemented",
-        "note": "Sẽ implement ở Sprint 2 khi có run_results table.",
-    }
+    return await handler.get_status(message_id)
 
 
 @router.post(

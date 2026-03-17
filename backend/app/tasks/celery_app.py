@@ -1,7 +1,16 @@
 from celery import Celery
 
-celery_app = Celery("agent")
+from app.core.config import settings
 
-# Values are expected to be loaded from environment variables later.
-celery_app.conf.broker_url = "redis://redis:6379/0"
-celery_app.conf.result_backend = "redis://redis:6379/1"
+celery_app = Celery(
+	"agent",
+	include=["app.tasks.process_a2a_message"],
+)
+
+celery_app.conf.broker_url = settings.CELERY_BROKER_URL
+celery_app.conf.result_backend = settings.CELERY_RESULT_BACKEND
+celery_app.conf.task_serializer = "json"
+celery_app.conf.result_serializer = "json"
+celery_app.conf.accept_content = ["json"]
+celery_app.conf.task_track_started = True
+celery_app.conf.timezone = "UTC"
