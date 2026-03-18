@@ -15,12 +15,14 @@ from app.repositories import (
 )
 from app.schemas.a2a_envelope import A2AMessage, A2APayloadType
 from app.schemas.customer import CustomerBatch, CustomerRecord, DataSource
-from app.skills.segment_insights import SegmentInsightsService
+from app.skills import ChurnPredictionService, SegmentInsightsService, SentimentAnalysisService
 
 
 class AgentProcessingService:
     def __init__(self) -> None:
+        self.churn_service = ChurnPredictionService()
         self.segment_service = SegmentInsightsService()
+        self.sentiment_service = SentimentAnalysisService()
 
     async def process_message(self, message: A2AMessage) -> dict[str, Any]:
         batch = await self._message_to_batch(message)
@@ -58,22 +60,24 @@ class AgentProcessingService:
             await db.commit()
 
         segment_results = [item for item in skill_results if item["skill_name"] == "segment_insights"]
+        churn_results = [item for item in skill_results if item["skill_name"] == "churn_prediction"]
+        sentiment_results = [item for item in skill_results if item["skill_name"] == "sentiment_analysis"]
         segment_by_customer = {str(item["customer_id"]): item for item in segment_results}
+        churn_by_customer = {str(item["customer_id"]): item for item in churn_results}
+        sentiment_by_customer = {str(item["customer_id"]): item for item in sentiment_results}
 
         return {
             **result_summary,
             "results": [
-                {
-                    "customer_id": str(customer.id),
-                    "churn_risk": None,
-                    "sentiment": None,
-                    "segment": segment_by_customer[str(customer.id)]["result_detail"],
-                    "segment_label": segment_by_customer[str(customer.id)]["label"],
-                    "status": "segment_ready",
-                }
+                self._build_customer_result(
+                    customer,
+                    segment_by_customer[str(customer.id)],
+                    churn_by_customer[str(customer.id)],
+                    sentiment_by_customer[str(customer.id)],
+                )
                 for customer in persisted_customers
             ],
-            "note": "Segment insights da chay that. Churn va sentiment van dang o muc placeholder.",
+            "note": "Ca 3 skill churn, sentiment, segment da duoc thuc thi bang ruleset runtime.",
         }
 
     async def get_message_status(self, message_id: UUID) -> dict[str, Any]:
@@ -125,23 +129,9 @@ class AgentProcessingService:
 
     def _build_skill_results(self, customers: list[Customer]) -> list[dict[str, Any]]:
         results: list[dict[str, Any]] = []
-        segment_results = self.segment_service.analyze_many(customers)
-        results.extend(segment_results)
-
-        for customer in customers:
-            for skill_name in ("churn_prediction", "sentiment_analysis"):
-                results.append(
-                    {
-                        "customer_id": customer.id,
-                        "skill_name": skill_name,
-                        "label": None,
-                        "score": None,
-                        "confidence": None,
-                        "summary": "Stub result persisted for workflow scaffolding.",
-                        "result_detail": {"status": "pending_skill_implementation"},
-                        "explainability": {},
-                    }
-                )
+        results.extend(self.churn_service.analyze_many(customers))
+        results.extend(self.sentiment_service.analyze_many(customers))
+        results.extend(self.segment_service.analyze_many(customers))
         return results
 
     def _segment_distribution(self, skill_results: list[dict[str, Any]]) -> dict[str, int]:
@@ -151,6 +141,81 @@ class AgentProcessingService:
             if item["skill_name"] == "segment_insights" and item.get("label")
         )
         return dict(counter)
+
+    def _build_customer_result(
+        self,
+        customer: Customer,
+        segment_result: dict[str, Any],
+        churn_result: dict[str, Any],
+        sentiment_result: dict[str, Any],
+    ) -> dict[str, Any]:
+        detail = dict(segment_result.get("result_detail") or {})
+        explainability = dict(segment_result.get("explainability") or {})
+        top_signals = list(explainability.get("top_signals") or [])
+        churn_detail = dict(churn_result.get("result_detail") or {})
+        sentiment_detail = dict(sentiment_result.get("result_detail") or {})
+        churn_explainability = dict(churn_result.get("explainability") or {})
+        sentiment_explainability = dict(sentiment_result.get("explainability") or {})
+        recommendations = self._merge_unique(
+            list(detail.get("recommended_actions") or []),
+            list(churn_detail.get("recommended_actions") or []),
+            list(sentiment_detail.get("recommended_actions") or []),
+        )
+        merged_signals = self._merge_unique(
+            top_signals,
+            list(churn_explainability.get("top_factors") or []),
+            list(sentiment_explainability.get("top_signals") or []),
+        )
+
+        return {
+            "customer_id": str(customer.id),
+            "email": customer.email,
+            "churn_risk": churn_result.get("score"),
+            "sentiment": sentiment_result.get("label"),
+            "core_insight": self._build_core_insight(segment_result, churn_result, sentiment_result),
+            "recommendations": recommendations,
+            "top_signals": merged_signals,
+            "churn": {
+                **churn_detail,
+                "summary": churn_result.get("summary"),
+                "top_factors": list(churn_explainability.get("top_factors") or []),
+                "score": churn_result.get("score"),
+                "confidence": churn_result.get("confidence"),
+            },
+            "sentiment_detail": {
+                **sentiment_detail,
+                "summary": sentiment_result.get("summary"),
+                "top_signals": list(sentiment_explainability.get("top_signals") or []),
+                "score": sentiment_result.get("score"),
+                "confidence": sentiment_result.get("confidence"),
+            },
+            "segment": {
+                **detail,
+                "summary": segment_result.get("summary"),
+                "top_signals": top_signals,
+            },
+            "segment_label": segment_result.get("label"),
+            "status": "analysis_ready",
+        }
+
+    def _build_core_insight(
+        self,
+        segment_result: dict[str, Any],
+        churn_result: dict[str, Any],
+        sentiment_result: dict[str, Any],
+    ) -> str:
+        segment_summary = segment_result.get("summary") or ""
+        churn_label = churn_result.get("label") or "unknown"
+        sentiment_label = sentiment_result.get("label") or "neutral"
+        return f"{segment_summary} Churn risk {churn_label}; sentiment {sentiment_label}.".strip()
+
+    def _merge_unique(self, *groups: list[str]) -> list[str]:
+        merged: list[str] = []
+        for group in groups:
+            for item in group:
+                if item and item not in merged:
+                    merged.append(item)
+        return merged
 
 
 async def process_message_timed(message: A2AMessage) -> tuple[dict[str, Any], float]:

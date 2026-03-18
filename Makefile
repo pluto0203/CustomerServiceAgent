@@ -9,7 +9,7 @@ down:
 	docker compose down
 
 logs:
-	docker compose logs -f api worker
+	docker compose logs -f api worker frontend
 
 build:
 	docker compose build

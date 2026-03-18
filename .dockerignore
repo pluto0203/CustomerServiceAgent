@@ -15,6 +15,10 @@
 .venv
 venv
 
+# Frontend build artifacts
+frontend/node_modules
+frontend/dist
+
 # Local data / artifacts
 *.db
 *.sqlite

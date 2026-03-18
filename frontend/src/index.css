@@ -1,0 +1,44 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  html, body, #app {
+    min-height: 100%;
+  }
+
+  body {
+    @apply bg-parchment text-ink font-sans antialiased;
+  }
+
+}
+
+@layer components {
+  .panel-surface {
+    @apply rounded-[28px] border border-line bg-white/70 shadow-panel backdrop-blur-xl;
+  }
+
+  .status-pill {
+    @apply inline-flex items-center rounded-full px-3 py-1 text-[11px] font-medium uppercase tracking-[0.16em] font-mono;
+  }
+
+  .status-neutral {
+    @apply bg-black/5 text-muted;
+  }
+
+  .status-success {
+    @apply bg-emerald-900/10 text-emerald-800;
+  }
+
+  .status-warning {
+    @apply bg-amber-900/10 text-amber-700;
+  }
+
+  .status-error {
+    @apply bg-red-900/10 text-red-700;
+  }
+
+  .skeleton {
+    @apply animate-pulse rounded-2xl bg-black/[0.06];
+  }
+}

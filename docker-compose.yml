@@ -1,5 +1,3 @@
-version: "3.9"
-
 services:
   api:
     build:
@@ -7,13 +5,27 @@ services:
       dockerfile: backend/Dockerfile
     container_name: agent-api
     env_file:
-      - backend/.env.example
+      - backend/.env
     ports:
-      - "8000:8000"
+      - "8001:8000"
     depends_on:
-      - postgres
-      - redis
-      - qdrant
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_started
+      qdrant:
+        condition: service_started
+
+  frontend:
+    build:
+      context: .
+      dockerfile: frontend/Dockerfile
+    container_name: agent-frontend
+    ports:
+      - "3000:80"
+    depends_on:
+      api:
+        condition: service_started
 
   worker:
     build:
@@ -22,22 +34,29 @@ services:
     container_name: agent-worker
     command: ["celery", "-A", "app.tasks.celery_app", "worker", "--loglevel=info"]
     env_file:
-      - backend/.env.example
+      - backend/.env
     depends_on:
-      - redis
-      - postgres
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_started
 
   postgres:
     image: postgres:16-alpine
     container_name: agent-postgres
     environment:
       POSTGRES_DB: agentdb
-      POSTGRES_USER: agent
-      POSTGRES_PASSWORD: agent
+      POSTGRES_USER: pluto
+      POSTGRES_PASSWORD: pluto123
     ports:
       - "5432:5432"
     volumes:
       - pg_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U pluto -d agentdb"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
 
   redis:
     image: redis:7-alpine

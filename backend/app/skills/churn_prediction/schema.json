@@ -1,0 +1,51 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "ChurnPredictionResult",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "risk_level",
+    "score",
+    "confidence",
+    "summary",
+    "recommended_actions",
+    "top_factors",
+    "metrics"
+  ],
+  "properties": {
+    "risk_level": {
+      "type": "string",
+      "enum": ["stable", "low", "medium", "high", "critical"]
+    },
+    "score": {
+      "type": "number",
+      "minimum": 0,
+      "maximum": 1
+    },
+    "confidence": {
+      "type": "number",
+      "minimum": 0,
+      "maximum": 1
+    },
+    "summary": {
+      "type": "string",
+      "minLength": 1
+    },
+    "recommended_actions": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "top_factors": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "metrics": {
+      "type": "object",
+      "additionalProperties": true
+    }
+  }
+}

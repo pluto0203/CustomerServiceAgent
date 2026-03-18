@@ -137,3 +137,5 @@ celerybeat.pid
 *.orig
 .cache/
 tmp/
+
+docs/

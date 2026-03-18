@@ -99,7 +99,6 @@ class WorkflowRun(TimestampMixin, Base):
 
     __table_args__ = (
         Index("ix_workflow_runs_status_created", "status", "created_at"),
-        Index("ix_workflow_runs_message_id", "message_id"),
     )
 
     def __repr__(self) -> str:
