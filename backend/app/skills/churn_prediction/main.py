@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import importlib
 import json
 from dataclasses import dataclass
 from pathlib import Path
@@ -10,8 +9,8 @@ from uuid import UUID
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.config import settings
 from app.models.customer import Customer
+from app.services.llm import LLMService
 
 
 @dataclass(slots=True)
@@ -40,6 +39,7 @@ class ChurnPredictionService:
         self.schema_path = schema_path or (base_dir / "schema.json")
         self._instruction_text = self.instruction_path.read_text(encoding="utf-8")
         self._response_schema = json.loads(self.schema_path.read_text(encoding="utf-8"))
+        self._llm_service = LLMService(skill_name=self.skill_name)
 
     async def analyze_from_db(
         self,
@@ -65,39 +65,12 @@ class ChurnPredictionService:
         return results
 
     def _call_ai(self, customer: Customer) -> dict[str, Any] | None:
-        if not settings.OPENAI_API_KEY:
-            return None
-
-        try:
-            openai_module = importlib.import_module("openai")
-            openai_client_cls = getattr(openai_module, "OpenAI")
-            client = openai_client_cls(api_key=settings.OPENAI_API_KEY)
-            prompt_payload = self._build_customer_payload(customer)
-
-            response = client.responses.create(
-                model=settings.OPENAI_MODEL,
-                input=[
-                    {"role": "system", "content": self._instruction_text},
-                    {
-                        "role": "user",
-                        "content": json.dumps(
-                            {
-                                "customer": prompt_payload,
-                                "required_schema": self._response_schema,
-                            },
-                            ensure_ascii=False,
-                        ),
-                    },
-                ],
-                temperature=0.1,
-            )
-
-            text_output = getattr(response, "output_text", None)
-            if not text_output:
-                return None
-            return json.loads(text_output)
-        except Exception:
-            return None
+        return self._llm_service.generate_json(
+            instruction_text=self._instruction_text,
+            response_schema=self._response_schema,
+            customer_payload=self._build_customer_payload(customer),
+            temperature=0.1,
+        )
 
     def _from_ai_or_rules(
         self,

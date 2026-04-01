@@ -80,12 +80,29 @@ class Settings(BaseSettings):
     # ------------------------------------------------------------------
     # LLM Providers
     # ------------------------------------------------------------------
+    LLM_PROVIDER: Literal["local", "openai", "auto"] = "local"
+    LLM_BASE_URL: str | None = "http://localhost:11434/v1"
+    LLM_API_KEY: str | None = None
+    LLM_MODEL: str | None = None
     OPENAI_API_KEY: str | None = None
     OPENAI_MODEL: str = "gpt-4o-mini"
     ANTHROPIC_API_KEY: str | None = None
     ANTHROPIC_MODEL: str = "claude-3-5-haiku-20241022"
-    LLM_REQUEST_TIMEOUT: int = 60
-    LLM_MAX_RETRIES: int = 3
+    LLM_REQUEST_TIMEOUT: int = 300
+    LLM_MAX_RETRIES: int = 1
+
+    # ------------------------------------------------------------------
+    # Web tools (optional enrichment)
+    # ------------------------------------------------------------------
+    WEB_TOOLS_ENABLED: bool = False
+    WEB_SEARCH_ENABLED: bool = False
+    WEB_FETCH_ENABLED: bool = False
+    WEB_SEARCH_MAX_RESULTS: int = 3
+    WEB_FETCH_MAX_CHARS: int = 3000
+    WEB_TOOLS_TIMEOUT_SECONDS: float = 10.0
+    WEB_TOOLS_USER_AGENT: str = "CustomerBehaviorAgent/1.0"
+    WEB_ALLOWED_DOMAINS: str | None = None
+    WEB_BLOCK_PRIVATE_NETWORK: bool = True
 
     # ------------------------------------------------------------------
     # Observability

@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import json
-import importlib
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -12,6 +11,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
 from app.models.customer import Customer
+from app.services.llm import LLMService
+from app.services.webtools import WebFetchResult, WebToolsService
 
 
 @dataclass(slots=True)
@@ -25,6 +26,8 @@ class SegmentInsight:
     recommended_actions: list[str]
     top_signals: list[str]
     metrics: dict[str, Any]
+    web_citations: list[dict[str, str]]
+    model_version: str = "ruleset-v1"
 
 
 class SegmentInsightsService:
@@ -48,6 +51,8 @@ class SegmentInsightsService:
         self.schema_path = schema_path or (base_dir / "schema.json")
         self._instruction_text = self._load_instruction()
         self._response_schema = self._load_schema()
+        self._llm_service = LLMService(skill_name=self.skill_name)
+        self._web_tools = WebToolsService()
 
     async def analyze_from_db(
         self,
@@ -67,8 +72,9 @@ class SegmentInsightsService:
     def analyze_many(self, customers: list[Customer]) -> list[dict[str, Any]]:
         results: list[dict[str, Any]] = []
         for customer in customers:
-            ai_result = self._call_ai(customer)
-            insight = self._from_ai_or_rules(customer, ai_result)
+            web_documents = self._collect_web_documents(customer)
+            ai_result = self._call_ai(customer, web_documents)
+            insight = self._from_ai_or_rules(customer, ai_result, web_documents)
             results.append(self._to_run_result(insight))
         return results
 
@@ -78,45 +84,22 @@ class SegmentInsightsService:
     def _load_schema(self) -> dict[str, Any]:
         return json.loads(self.schema_path.read_text(encoding="utf-8"))
 
-    def _call_ai(self, customer: Customer) -> dict[str, Any] | None:
-        """
-        Optional AI call. Nếu không có API key hoặc SDK, fallback về rule-based.
-        """
-        if not settings.OPENAI_API_KEY:
-            return None
+    def _call_ai(self, customer: Customer, web_documents: list[WebFetchResult]) -> dict[str, Any] | None:
+        return self._llm_service.generate_json(
+            instruction_text=self._instruction_text,
+            response_schema=self._response_schema,
+            customer_payload=self._build_customer_payload(customer),
+            temperature=0.2,
+            external_context={"web_sources": self._serialize_web_documents(web_documents)},
+        )
 
-        try:
-            openai_module = importlib.import_module("openai")
-            openai_client_cls = getattr(openai_module, "OpenAI")
-            client = openai_client_cls(api_key=settings.OPENAI_API_KEY)
-            prompt_payload = self._build_customer_payload(customer)
-
-            response = client.responses.create(
-                model=settings.OPENAI_MODEL,
-                input=[
-                    {"role": "system", "content": self._instruction_text},
-                    {
-                        "role": "user",
-                        "content": json.dumps(
-                            {
-                                "customer": prompt_payload,
-                                "required_schema": self._response_schema,
-                            },
-                            ensure_ascii=False,
-                        ),
-                    },
-                ],
-                temperature=0.2,
-            )
-
-            text_output = getattr(response, "output_text", None)
-            if not text_output:
-                return None
-            return json.loads(text_output)
-        except Exception:
-            return None
-
-    def _from_ai_or_rules(self, customer: Customer, ai_result: dict[str, Any] | None) -> SegmentInsight:
+    def _from_ai_or_rules(
+        self,
+        customer: Customer,
+        ai_result: dict[str, Any] | None,
+        web_documents: list[WebFetchResult],
+    ) -> SegmentInsight:
+        citations = self._build_web_citations(web_documents)
         if ai_result is not None and self._looks_like_valid_result(ai_result):
             return SegmentInsight(
                 customer_id=customer.id,
@@ -128,9 +111,11 @@ class SegmentInsightsService:
                 recommended_actions=[str(item) for item in ai_result.get("recommended_actions", [])],
                 top_signals=[str(item) for item in ai_result.get("top_signals", [])],
                 metrics=dict(ai_result.get("metrics", {})),
+                web_citations=citations,
+                model_version=str(ai_result.get("_model_version", "llm-unknown")),
             )
 
-        return self._rule_based_insight(customer)
+        return self._rule_based_insight(customer, citations)
 
     def _build_customer_payload(self, customer: Customer) -> dict[str, Any]:
         return {
@@ -159,7 +144,11 @@ class SegmentInsightsService:
         }
         return required.issubset(result.keys())
 
-    def _rule_based_insight(self, customer: Customer) -> SegmentInsight:
+    def _rule_based_insight(
+        self,
+        customer: Customer,
+        citations: list[dict[str, str]],
+    ) -> SegmentInsight:
         total_revenue = customer.total_revenue or 0.0
         total_orders = customer.total_orders or 0
         days_since_last_order = customer.days_since_last_order
@@ -278,6 +267,9 @@ class SegmentInsightsService:
 
         if feedback_volume > 0:
             signals.append(f"Co {feedback_volume} dau hieu feedback text")
+        if citations:
+            signals.append(f"Co bo sung context web tu {len(citations)} nguon")
+            actions.append("Doi chieu signal noi bo voi context thi truong ben ngoai")
 
         summary = self._build_summary(segment_name, total_orders, total_revenue, days_since_last_order)
 
@@ -298,7 +290,56 @@ class SegmentInsightsService:
                 "support_ticket_count": support_ticket_count,
                 "feedback_volume": feedback_volume,
             },
+            web_citations=citations,
         )
+
+    def _collect_web_documents(self, customer: Customer) -> list[WebFetchResult]:
+        if not settings.WEB_TOOLS_ENABLED:
+            return []
+
+        query = self._build_web_query(customer)
+        if not query:
+            return []
+
+        return self._web_tools.search_and_fetch(query)
+
+    def _build_web_query(self, customer: Customer) -> str:
+        attrs = customer.extra_attributes or {}
+        industry = str(attrs.get("industry", "")).strip()
+        region = str(attrs.get("region", "")).strip()
+        product_category = str(attrs.get("product_category", "")).strip()
+
+        parts = ["customer retention benchmark"]
+        if industry:
+            parts.append(industry)
+        if product_category:
+            parts.append(product_category)
+        if region:
+            parts.append(region)
+        return " ".join(part for part in parts if part)
+
+    def _serialize_web_documents(self, documents: list[WebFetchResult]) -> list[dict[str, str]]:
+        payload: list[dict[str, str]] = []
+        for item in documents:
+            payload.append(
+                {
+                    "title": item.title or "untitled",
+                    "url": item.url,
+                    "excerpt": item.text[:800],
+                }
+            )
+        return payload
+
+    def _build_web_citations(self, documents: list[WebFetchResult]) -> list[dict[str, str]]:
+        citations: list[dict[str, str]] = []
+        for item in documents:
+            citations.append(
+                {
+                    "title": item.title or "untitled",
+                    "url": item.url,
+                }
+            )
+        return citations
 
     def _to_run_result(self, insight: SegmentInsight) -> dict[str, Any]:
         return {
@@ -314,11 +355,12 @@ class SegmentInsightsService:
                 "segment_name": insight.segment_name,
                 "recommended_actions": insight.recommended_actions,
                 "metrics": insight.metrics,
+                "web_citations": insight.web_citations,
             },
             "explainability": {
                 "top_signals": insight.top_signals,
             },
-            "model_version": "ruleset-v1",
+            "model_version": insight.model_version,
         }
 
     def _build_summary(

@@ -16,10 +16,11 @@ Fallback (test/manual):
 
 from uuid import UUID
 
-from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, UploadFile, status
+from fastapi import APIRouter, Depends, HTTPException, UploadFile, status
 
 from app.schemas.a2a_envelope import A2AMessage, A2AResponse, A2AStatus, A2APayloadType
 from app.services.agent.message_handler import AgentMessageHandler
+from app.services.ingestion import CSVIngestionService
 
 router = APIRouter(prefix="/agent", tags=["Agent Input"])
 
@@ -138,8 +139,6 @@ async def get_message_status(
 )
 async def ingest_csv(
     file: UploadFile,
-    background_tasks: BackgroundTasks,
-    handler: AgentMessageHandler = Depends(get_message_handler),
 ) -> dict:
     """
     Nhận file CSV, validate format, enqueue ingestion job.
@@ -151,9 +150,21 @@ async def ingest_csv(
             detail="Chỉ chấp nhận file .csv",
         )
 
-    # TODO Sprint 2: đọc CSV, validate, wrap thành CustomerBatch, enqueue
+    file_content = await file.read()
+    ingestion_service = CSVIngestionService()
+
+    try:
+        result = await ingestion_service.ingest_csv_bytes(
+            content=file_content,
+            filename=file.filename,
+        )
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=str(exc),
+        ) from exc
+
     return {
-        "status": "accepted",
-        "filename": file.filename,
-        "note": "CSV ingestion sẽ implement đầy đủ ở Sprint 2.",
+        "status": "completed",
+        **result.to_dict(),
     }
