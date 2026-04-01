@@ -116,6 +116,14 @@ class Settings(BaseSettings):
     AGENT_ID: str = "customer-behavior-agent"
     AGENT_VERSION: str = "1.0.0"
 
+    # ------------------------------------------------------------------
+    # Runtime Memory
+    # ------------------------------------------------------------------
+    MEMORY_ENABLED: bool = True
+    MEMORY_COMPACT_AFTER_TURNS: int = 10
+    MEMORY_KEEP_LAST_TURNS: int = 6
+    MEMORY_SESSIONS_DIR: str = ".agent_sessions"
+
 
 @lru_cache
 def get_settings() -> Settings:

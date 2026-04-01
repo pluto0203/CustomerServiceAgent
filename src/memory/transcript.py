@@ -4,7 +4,7 @@ from __future__ import annotations
 class TranscriptStore:
     def __init__(self) -> None:
         self.entries: list[str] = []
-        self.flushed: bool = True
+        self.flushed: bool = False
 
     def append(self, entry: str) -> None:
         self.entries.append(entry)
@@ -16,9 +16,8 @@ class TranscriptStore:
         if keep_last == 0:
             self.entries = []
         elif len(self.entries) > keep_last:
-            self.entries = self.entries[-keep_last:]
-        self.flushed = False
-
+            self.entries[:] = self.entries[-keep_last:]
+            
     def replay(self) -> tuple[str, ...]:
         return tuple(self.entries)
 

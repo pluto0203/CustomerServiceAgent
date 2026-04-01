@@ -15,6 +15,7 @@ from app.repositories import (
 )
 from app.schemas.a2a_envelope import A2AMessage, A2APayloadType
 from app.schemas.customer import CustomerBatch, CustomerRecord, DataSource
+from app.services.memory import create_or_restore_memory_manager
 from app.skills import ChurnPredictionService, SegmentInsightsService, SentimentAnalysisService
 
 
@@ -26,6 +27,8 @@ class AgentProcessingService:
 
     async def process_message(self, message: A2AMessage) -> dict[str, Any]:
         batch = await self._message_to_batch(message)
+        session_id = str(message.correlation_id or message.message_id)
+        memory_manager = create_or_restore_memory_manager(session_id=session_id)
 
         async with async_session() as db:
             message_logs = MessageLogRepository(db)
@@ -66,7 +69,7 @@ class AgentProcessingService:
         churn_by_customer = {str(item["customer_id"]): item for item in churn_results}
         sentiment_by_customer = {str(item["customer_id"]): item for item in sentiment_results}
 
-        return {
+        result_payload = {
             **result_summary,
             "results": [
                 self._build_customer_result(
@@ -79,6 +82,27 @@ class AgentProcessingService:
             ],
             "note": "Ca 3 skill churn, sentiment, segment da duoc thuc thi bang ruleset runtime.",
         }
+
+        if memory_manager is not None:
+            memory_manager.submit_turn(
+                prompt=(
+                    f"payload_type={message.payload_type.value}; "
+                    f"records={len(persisted_customers)}; source={message.routing.source_agent_id}"
+                ),
+                response=(
+                    f"status=completed; workflow_run_id={run.id}; "
+                    f"segment_distribution={segment_distribution}"
+                ),
+                routed_to="customer_behavior_pipeline",
+            )
+            saved_path = memory_manager.flush_to_disk()
+            result_payload["memory"] = {
+                "session_id": session_id,
+                "saved_path": str(saved_path),
+                "snapshot": memory_manager.snapshot(),
+            }
+
+        return result_payload
 
     async def get_message_status(self, message_id: UUID) -> dict[str, Any]:
         async with async_session() as db:
